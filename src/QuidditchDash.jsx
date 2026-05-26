@@ -538,10 +538,20 @@ function HarryIllustration() {
       ref={ref}
       width={280}
       height={200}
-      className="block rounded-xl"
+      className="block rounded-xl w-[75%] max-w-[280px] h-auto"
       style={{ boxShadow: "0 4px 18px rgba(120,80,0,0.15)" }}
     />
   );
+}
+
+// ── DPR-aware canvas setup ─────────────────────────────────────────────────────
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  return ctx;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -606,7 +616,7 @@ export default function QuidditchDash() {
     if (phase !== "playing") return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+    const ctx = setupCanvas(canvas);
 
     const endGame = finalScore => {
       cancelAnimationFrame(rafRef.current);
@@ -623,32 +633,43 @@ export default function QuidditchDash() {
       s.caught = false;
     };
 
-    const tick = () => {
+    const TARGET_FPS = 60;
+    const TARGET_FRAME_MS = 1000 / TARGET_FPS;
+    let lastTs = null;
+
+    const tick = (ts) => {
       if (phaseRef.current !== "playing") return;
       const s = gsRef.current; if (!s) return;
-      s.frame++; s.t += 0.055;
+
+      // ── Delta time — clamp to max 3 frames to avoid spiral on tab switch ──
+      if (lastTs === null) lastTs = ts;
+      const rawDt = ts - lastTs;
+      lastTs = ts;
+      const dt = Math.min(rawDt, TARGET_FRAME_MS * 3) / TARGET_FRAME_MS; // 1.0 = perfect 60fps
+
+      s.frame++; s.t += 0.055 * dt;
 
       const alive = Date.now() - spawnRef.current > INVINCIBLE_MS;
 
-      // ── Physics — floaty flight, never touches ground ───────────────────
-      s.velY = clamp(s.velY + GRAVITY, -12, FALL_CAP);
-      s.playerY = clamp(s.playerY + s.velY, FLY_TOP, FLY_BOT - HARRY_H);
+      // ── Physics — scaled by dt so same speed on all devices ────────────
+      s.velY = clamp(s.velY + GRAVITY * dt, -12, FALL_CAP);
+      s.playerY = clamp(s.playerY + s.velY * dt, FLY_TOP, FLY_BOT - HARRY_H);
       // soft ceiling bounce
       if (s.playerY <= FLY_TOP + 2) s.velY = Math.abs(s.velY) * 0.4;
       // soft floor bounce — keeps Harry always flying
       if (s.playerY >= FLY_BOT - HARRY_H - 2) s.velY = -Math.abs(s.velY) * 0.5;
 
-      s.worldX += s.speed;
+      s.worldX += s.speed * dt;
 
       s.trail.unshift({ x: HARRY_X, y: s.playerY });
       if (s.trail.length > 14) s.trail.pop();
 
       // ── Snitch ──────────────────────────────────────────────────────────
       let sn = s.snitch;
-      sn.wingT += 0.32;
-      sn.blinkT++;
-      sn.bobT += 0.038;
-      sn.y = clamp(sn.y + Math.sin(sn.bobT) * 0.65, FLY_TOP + 45, FLY_BOT - 45);
+      sn.wingT += 0.32 * dt;
+      sn.blinkT += dt;
+      sn.bobT += 0.038 * dt;
+      sn.y = clamp(sn.y + Math.sin(sn.bobT) * 0.65 * dt, FLY_TOP + 45, FLY_BOT - 45);
 
       // catch check
       const ssx = sn.worldX - s.worldX;
@@ -659,19 +680,19 @@ export default function QuidditchDash() {
 
       // missed — snitch went off the left side — respawn ahead
       if (sn.active && sn.worldX < s.worldX - 60) {
-        s.snitch = makeSnitch(s.worldX); sn = s.snitch; // respawn
+        s.snitch = makeSnitch(s.worldX); sn = s.snitch;
         sn.y = rand(FLY_TOP + 50, FLY_BOT - 50);
         sn.bobT = rand(0, Math.PI * 2);
       }
 
-      // ── Obstacles ───────────────────────────────────────────────────────
-      if (s.frame >= s.nextSpawn) {
-        const interval = Math.max(100, 175 - Math.floor(s.score / 50) * 5);
-        s.nextSpawn = s.frame + interval;
+      // ── Obstacles — spawn by time not frame count ────────────────────────
+      s.timeAcc = (s.timeAcc || 0) + rawDt;
+      const interval = Math.max(1400, 2500 - Math.floor(s.score / 50) * 80);
+      if (s.timeAcc >= interval) {
+        s.timeAcc = 0;
         const ox = s.worldX + W + 40;
-        // don't spawn right where the snitch is
         if (Math.abs(ox - sn.worldX) > 130) {
-          s.obstacles.push(makeObs(s.worldX, s.speed, Math.floor(s.score / 80)));  // difficulty from score
+          s.obstacles.push(makeObs(s.worldX, s.speed, Math.floor(s.score / 80)));
         }
       }
       s.obstacles = s.obstacles.filter(o => o.x - s.worldX + OBS_W > -10);
@@ -716,7 +737,7 @@ export default function QuidditchDash() {
   useEffect(() => {
     if (phase === "playing") return;
     const canvas = canvasRef.current; if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+    const ctx = setupCanvas(canvas);
     drawBg(ctx, 0, 0);
     const fakeSn = { worldX: 300, y: 220, bobT: 0, wingT: 1.2, blinkT: 50, active: true };
     drawSnitch(ctx, fakeSn, 0);
@@ -747,9 +768,8 @@ export default function QuidditchDash() {
       >
         <canvas
           ref={canvasRef}
-          width={W}
-          height={H}
-          className="block w-full touch-none"
+          className="block touch-none"
+          style={{ width: "100%", height: "auto", aspectRatio: `${W}/${H}` }}
         />
 
         {/* Idle overlay */}
@@ -760,7 +780,7 @@ export default function QuidditchDash() {
               style={{ textShadow: "0 1px 0 rgba(255,255,255,0.7)" }}>
               Help Harry Potter catch the snitch!
             </p>
-            <div className="px-12 py-3 bg-white text-[#3d1a00] font-black text-[15px] tracking-widest cursor-pointer rounded-lg"
+            <div className="px-8 py-3 bg-white text-[#3d1a00] font-black text-[15px] tracking-widest cursor-pointer rounded-lg w-[80%] text-center"
               style={{ border: "2px solid #92400e", boxShadow: "0 4px 0 #78350f" }}>
               MOUNT BROOM 🧹
             </div>
@@ -775,7 +795,7 @@ export default function QuidditchDash() {
             <div className="text-[#3d1a00] text-[52px] font-black leading-tight">{score}</div>
             <div className="text-gray-500 text-xs mb-1">pts</div>
             <div className="text-[#b8860b] text-[13px] font-semibold mb-6">Best: {best} pts</div>
-            <div className="px-11 py-3 bg-white text-[#3d1a00] font-black text-sm tracking-widest cursor-pointer rounded-lg"
+            <div className="px-8 py-3 bg-white text-[#3d1a00] font-black text-sm tracking-widest cursor-pointer rounded-lg w-[80%] text-center"
               style={{ border: "2px solid #92400e", boxShadow: "0 4px 0 #78350f" }}>
               FLY AGAIN 🧹
             </div>
@@ -784,7 +804,7 @@ export default function QuidditchDash() {
 
         {/* In-game hint */}
         {phase === "playing" && (
-          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[rgba(90,40,0,0.38)] text-[10px] tracking-widest pointer-events-none whitespace-nowrap">
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[rgba(90,40,0,0.38)] text-[10px] tracking-widest pointer-events-none text-center w-full px-2">
             TAP to fly up · catch the golden snitch ✨
           </div>
         )}
