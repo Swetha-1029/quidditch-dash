@@ -641,9 +641,13 @@ export default function QuidditchDash() {
       if (phaseRef.current !== "playing") return;
       const s = gsRef.current; if (!s) return;
 
-      // ── Delta time — clamp to max 3 frames to avoid spiral on tab switch ──
+      // ── FPS cap — skip frame if too soon (fixes 120Hz/144Hz screens) ──────
       if (lastTs === null) lastTs = ts;
       const rawDt = ts - lastTs;
+      if (rawDt < TARGET_FRAME_MS - 1) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
       lastTs = ts;
       const dt = Math.min(rawDt, TARGET_FRAME_MS * 3) / TARGET_FRAME_MS; // 1.0 = perfect 60fps
 
